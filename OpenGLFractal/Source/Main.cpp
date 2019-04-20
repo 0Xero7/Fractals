@@ -5,22 +5,34 @@
 #include "Complex.cpp"
 #include "Color.cpp"
 
-Color c1 = Color(255, 255, 255);
-Color c2 = Color(20, 20, 20);
+Color border = Color(31, 28, 24);
+Color in = Color(0, 0, 0);				    //	IN SET			(DARKER)
+Color out = Color(245, 239, 239);				//	NOT IN SET		(LIGHTER)
 
-int canvas_size = 1000;
+Color* LUT;
+
+int canvas_size = 500;
 int supersampling = 2;
+int iteration_limit = 1000;
+double zoom = 1;
+double pt_x = -0.761574;
+double pt_y = -0.0847596;
+int it = 1;
+bool it_complete = false, aa_complete = false;
+
+Complex** a = new Complex * [canvas_size * supersampling];
+int** buffer = new int* [canvas_size * supersampling];
 
 double clamp01(double arg) { return arg > 1 ? (double)1 : arg; }
 
 Color Lerp(Color c1, Color c2, double currentStep, double maxStep)
 {
-	return Color(clamp01(c1.r + ((c2.r - c1.r) / maxStep * currentStep)),
-		clamp01(c1.g + ((c2.g - c1.g) / maxStep * currentStep)),
-		clamp01(c1.b + ((c2.b - c1.b) / maxStep * currentStep)));
+	return Color(clamp01(c1.r + (((c2.r - c1.r) / iteration_limit) * currentStep)),
+		clamp01(c1.g + (((c2.g - c1.g) / iteration_limit) * currentStep)),
+		clamp01(c1.b + (((c2.b - c1.b) / iteration_limit) * currentStep)));
 }
 
-void renderloop(GLFWwindow * window, int** buffer, bool refresh, int max_iterations)
+void renderloop(GLFWwindow * window, int** buffer, bool refresh, int max_iterations, bool fast)
 {
 	if (refresh)
 	{/* Render here */
@@ -37,11 +49,12 @@ void renderloop(GLFWwindow * window, int** buffer, bool refresh, int max_iterati
 		for (int i = 0; i < canvas_size * supersampling; i++)
 			for (int j = 0; j < canvas_size * supersampling; j++)
 			{
+				if ((j / supersampling) % 1 != 0) continue;
 				if (buffer[i][j] == -1)
-					glColor3d(0, 0, 0);
+					glColor3d(in.r, in.g, in.b);
 				else
 				{
-					shade = Lerp(c2, c1, buffer[i][j], max_iterations);
+					shade = LUT[buffer[i][j]];
 					glColor3d(shade.r, shade.g, shade.b);
 				}
 				glVertex2d(i / supersampling, j / supersampling);
@@ -80,11 +93,12 @@ void pixel_iteration(Complex * *cache, int** buffer, double scale, double s_x, d
 
 Color get(int** buffer, int x, int y, int max_iterations)
 {
-	if (x < 0 || x >= canvas_size * supersampling || y < 0 || y >= canvas_size * supersampling) return Color(0,0,0);
-	else return Lerp(c2, c1, buffer[x][y], max_iterations);
+	if (x < 0 || x >= canvas_size * supersampling || y < 0 || y >= canvas_size * supersampling) return in;
+	else if (buffer[x][y] > -1) return LUT[buffer[x][y]];
+	else return in;
 }
 
-void antialias(GLFWwindow *window, bool refresh, int** buffer, int size, int max_iterations)
+void antialias(GLFWwindow * window, bool refresh, int** buffer, int size, int max_iterations)
 {
 	if (refresh)
 	{/* Render here */
@@ -127,6 +141,67 @@ void antialias(GLFWwindow *window, bool refresh, int** buffer, int size, int max
 	glfwPollEvents();
 }
 
+void InitLUT()
+{
+	LUT = new Color[iteration_limit];
+	for (int i = 0; i < iteration_limit; i++)
+		LUT[i] = Lerp(out, border, i, iteration_limit);
+}
+
+void Redraw()
+{
+	it = 1;
+	aa_complete = false;
+
+	for (int i = 0; i < canvas_size * supersampling; i++)
+	{
+		for (int j = 0; j < canvas_size * supersampling; j++)
+		{
+			buffer[i][j] = -1;
+			a[i][j].im = a[i][j].real = 0;
+		}
+	}
+}
+
+double l_x, l_y;
+void mouse_button_callback(GLFWwindow * window, double xpos, double ypos)
+{
+	if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
+	{
+		glfwGetCursorPos(window, &xpos, &ypos);
+
+		if (l_x == -1)
+		{
+			l_x = xpos;
+			l_y = ypos;
+		}
+
+		double delta_x = xpos - l_x, delta_y = ypos - l_y;
+
+		pt_x -= delta_x / (200 * zoom);
+		pt_y -= delta_y / (200 * zoom);
+
+		l_x = xpos;
+		l_y = ypos;
+
+		Redraw();
+	}
+	else
+	{
+		l_x = l_y = -1;
+	}
+}
+
+void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
+{
+	if (yoffset > 0)
+		zoom *= 1.2;
+	else if (yoffset < 0)
+		zoom /= 1.2;
+
+	Redraw();
+}
+
 int main(void)
 {
 	GLFWwindow* window;
@@ -145,9 +220,18 @@ int main(void)
 
 	/* Make the window's context current */
 	glfwMakeContextCurrent(window);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-	Complex** a = new Complex * [canvas_size * supersampling];
-	int** buffer = new int* [canvas_size * supersampling];
+	glHint(GL_POINT_SMOOTH, GL_NICEST);
+	glHint(GL_LINE_SMOOTH, GL_NICEST);
+	glHint(GL_POLYGON_SMOOTH, GL_NICEST);
+
+	glEnable(GL_POINT_SMOOTH);
+	glfwSetCursorPosCallback(window, mouse_button_callback); 
+	glfwSetScrollCallback(window, scroll_callback);
+
+	InitLUT();
 
 	for (int i = 0; i < canvas_size * supersampling; ++i)
 	{
@@ -163,12 +247,6 @@ int main(void)
 		}
 	}
 
-	int it = 1;
-
-	int iteration_limit = 1000;
-	const double zoom = 71256;
-
-	bool it_complete = false, aa_complete = false;
 	/* Loop until the user closes the window */
 	while (!glfwWindowShouldClose(window))
 	{
@@ -176,11 +254,14 @@ int main(void)
 
 		if (!it_complete)
 		{
-			pixel_iteration(a, buffer, zoom, -0.761574, -0.0847596, it++);
+			pixel_iteration(a, buffer, zoom, pt_x, pt_y, it++);
 			if (it % 50 == 0)
 				std::cout << "Iteration " << it << std::endl;
 
-			renderloop(window, buffer, (it % 100 == 0), iteration_limit);
+			if (it > 2 && ((it < 10 && it % 2 == 0) || (it < 50 && it % 20 == 0) || (it < 100 && it % 25 == 0) || (it > 100 && it % 100 == 0)))
+				renderloop(window, buffer, 1, iteration_limit, true);
+			else
+				glfwPollEvents();
 		}
 		else                // Iterations done
 		{
