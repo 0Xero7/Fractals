@@ -125,24 +125,6 @@ void antialias(GLFWwindow *window, bool refresh, int** buffer, int size, int max
 
 	/* Poll for and process events */
 	glfwPollEvents();
-
-	/*size *= supersampling;
-	for (int i = 0; i < canvas_size * supersampling; i++)
-	{
-		for (int j = 0; j < canvas_size * supersampling; j++)
-		{
-			for (int k = -size; k < size; k++)
-			{
-				for (int l = -size; l < size; l++)
-				{
-					if (i != 0 && j != 0)
-						smooth_buffer[i][j] += get(buffer, i + k, i + j);
-				}
-			}
-
-			smooth_buffer[i][j] /= (2 * size + 1) * (2 * size + 1);
-		}
-	}*/
 }
 
 int main(void)
@@ -163,20 +145,14 @@ int main(void)
 
 	/* Make the window's context current */
 	glfwMakeContextCurrent(window);
-	glEnable(GL_POINT_SMOOTH);
-	glEnable(GL_BLEND);
-	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	glPointSize(6.0);
 
 	Complex** a = new Complex * [canvas_size * supersampling];
 	int** buffer = new int* [canvas_size * supersampling];
-	int** smooth_buffer = new int* [canvas_size * supersampling];
 
 	for (int i = 0; i < canvas_size * supersampling; ++i)
 	{
 		a[i] = new Complex[canvas_size * supersampling];
 		buffer[i] = new int[canvas_size * supersampling];
-		smooth_buffer[i] = new int[canvas_size * supersampling];
 	}
 
 	for (int i = 0; i < canvas_size * supersampling; i++)
@@ -184,7 +160,6 @@ int main(void)
 		for (int j = 0; j < canvas_size * supersampling; j++)
 		{
 			buffer[i][j] = -1;
-			smooth_buffer = 0;
 		}
 	}
 
@@ -220,6 +195,14 @@ int main(void)
 		}
 	}
 
+	for (int i = 0; i < canvas_size * supersampling; ++i)
+	{
+		delete(a[i]);
+		delete(buffer[i]);
+	}
+
+	delete(a);
+	delete(buffer);
 
 	glfwTerminate();
 	return 0;
