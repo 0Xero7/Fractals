@@ -7,9 +7,9 @@
 #include <thread>
 #include <chrono>
 
-Color border = Color(31, 28, 24);
-Color in = Color(0, 0, 0);				    //	IN SET			(DARKER)
-Color out = Color(245, 239, 239);				//	NOT IN SET		(LIGHTER)
+Color border = Color("#000000");
+Color in     = Color("#ffffff");				    //	IN SET			(DARKER)
+Color out    = Color("#00dbde");//Color(245, 239, 239);				//	NOT IN SET		(LIGHTER)
 
 Color* LUT;
 
@@ -22,6 +22,10 @@ double pt_y = -0.0847596;
 int it = 1;
 bool it_complete = false, aa_complete = false;
 
+int gradient_breaks = 40;
+
+int REDRAW_FLAG = 0,THREADS_RDY = 1;
+
 int threads = 4;
 
 Complex** a = new Complex * [canvas_size * supersampling];
@@ -31,9 +35,9 @@ double clamp01(double arg) { return arg > 1 ? (double)1 : arg; }
 
 Color Lerp(Color c1, Color c2, double currentStep)
 {
-	return Color(clamp01(c1.r + (((c2.r - c1.r) / iteration_limit) * currentStep)),
-		clamp01(c1.g + (((c2.g - c1.g) / iteration_limit) * currentStep)),
-		clamp01(c1.b + (((c2.b - c1.b) / iteration_limit) * currentStep)));
+	return Color(clamp01(c1.r + (((c2.r - c1.r) / gradient_breaks) * currentStep)),
+		clamp01(c1.g + (((c2.g - c1.g) / gradient_breaks) * currentStep)),
+		clamp01(c1.b + (((c2.b - c1.b) / gradient_breaks) * currentStep)));
 }
 std::chrono::steady_clock::time_point begin = std::chrono::steady_clock::now();
 
@@ -41,27 +45,50 @@ void threaded_render(Complex** cache, int** buffer, int it_count, int s_x, int s
 {
 	double delta = 5 / (canvas_size * zoom * supersampling);																	// GET PIXEL SIZE WRT. SCALE
 	double x = pt_x - (canvas_size * supersampling / 2) * delta, y = -pt_y + (canvas_size * supersampling / 2) * delta;			// GET TOP-LEFT POSITION
+	double r, img, real, im;
 
-	int frame_c = 0;
-	for (int i = s_x; i < e_x; i++)
+	if (!REDRAW_FLAG)
 	{
-		for (int j = s_y; j < e_y; j++)
+		for (int i = s_x; i < e_x; i++)
 		{
+			for (int j = s_y; j < e_y; j++)
+			{
+				if (buffer[i][j] > -1) continue;
+				r = cache[i][j].real;
+				img = cache[i][j].im;
 
-			double real = (cache[i][j].real * cache[i][j].real) - (cache[i][j].im * cache[i][j].im) + (x + i * delta);
-			double im = (2 * cache[i][j].im * cache[i][j].real) + (y - j * delta);
+				real = (r * r) - (img * img) + (x + i * delta);
+				im = (r * img);
+				im += im + (y - j * delta);
 
-			if (real * real + im * im > 4)
-				buffer[i][j] = it_count;
+				if (real * real + im * im > 4)
+					buffer[i][j] = it_count;
 
-			cache[i][j].real = real;
-			cache[i][j].im = im;
-
-			frame_c++;
+				cache[i][j].real = real;
+				cache[i][j].im = im;
+			}
 		}
 	}
+	else
+	{
+		REDRAW_FLAG &= ~(1 << (thrd_count-1));
+		for (int i = s_x; i < e_x; i++)
+		{
+			for (int j = s_y; j < e_y; j++)
+			{
+				real =  (x + i * delta);
+				im = (y - j * delta);
 
-//	std::cout << thrd_count << " ended." << std::endl;
+				if (real * real + im * im > 4)
+					buffer[i][j] = it_count;
+				else
+					buffer[i][j] = -1;
+
+				cache[i][j].real = real;
+				cache[i][j].im = im;
+			}
+		}
+	}
 }
 
 void threaded_render_iterlaced(Complex** cache, int** buffer, int it_count, int offset)
@@ -92,39 +119,34 @@ void threaded_render_iterlaced(Complex** cache, int** buffer, int it_count, int 
 	}
 }
 
-void renderloop(GLFWwindow * window, int** buffer, bool refresh, bool fast)
+void renderloop(GLFWwindow * window, int** buffer, bool refresh, int downsample)
 {
 	if (refresh)
 	{/* Render here */
 		glClear(GL_COLOR_BUFFER_BIT);
-		glMatrixMode(GL_PROJECTION);
-		glLoadIdentity();
-		glOrtho(0, canvas_size, canvas_size, 0, 0, 1);
-
 		glBegin(GL_POINTS);
 
-		float shift = 0.0;
 		Color shade;
 
-		int totalpixels = canvas_size * supersampling * canvas_size * supersampling;
-		int perthread = totalpixels / threads;
+		int totalpixels = canvas_size * supersampling;
+		double pixel_x = 0, pixel_y = 0, pixel_delta = downsample, loop_delta = downsample * supersampling;
 
-		for (int i = 0; i < canvas_size * supersampling; i++)
+		for (int i = 0; i < totalpixels; i+= loop_delta)
 		{
-			if (i % supersampling != 0) continue;
-			for (int j = 0; j < canvas_size * supersampling; j++)
+			for (int j = 0; j < totalpixels; j+= loop_delta)
 			{
-				if (j % supersampling != 0) continue;
-				if ((j / supersampling) % 1 != 0) continue;
 				if (buffer[i][j] == -1)
 					glColor3d(in.r, in.g, in.b);
 				else
 				{
-					shade = LUT[buffer[i][j]];
+					shade = LUT[(buffer[i][j] % gradient_breaks)];
 					glColor3d(shade.r, shade.g, shade.b);
 				}
-				glVertex2d(i / supersampling, j / supersampling);
+				glVertex2d(pixel_x, pixel_y);
+				pixel_y += pixel_delta;
 			}
+			pixel_y = 0;
+			pixel_x += pixel_delta;
 		}
 		glEnd();
 		glFinish();
@@ -146,6 +168,7 @@ void pixel_iteration(Complex **cache, int** buffer, double scale, double s_x, do
 
 	std::thread t1, t2, t3, t4, t5, t6, t7, t8, t9, t10, t11, t12, t13, t14, t15, t16;
 
+	THREADS_RDY = 0;
 	switch (threads)
 	{
 	case 1:
@@ -222,13 +245,14 @@ void pixel_iteration(Complex **cache, int** buffer, double scale, double s_x, do
 		break;
 	}
 
+	THREADS_RDY = 1;
 //	std::cout << std::endl;
 }
 
 Color get(int** buffer, int x, int y)
 {
 	if (x < 0 || x >= canvas_size * supersampling || y < 0 || y >= canvas_size * supersampling) return in;
-	else if (buffer[x][y] > -1) return LUT[buffer[x][y]];
+	else if (buffer[x][y] > -1) return LUT[buffer[x][y] % gradient_breaks];
 	else return in;
 }
 
@@ -277,32 +301,38 @@ void antialias(GLFWwindow * window, bool refresh, int** buffer, int size)
 
 void InitLUT()
 {
-	LUT = new Color[iteration_limit];
-	for (int i = 0; i < iteration_limit; i++)
-		LUT[i] = Lerp(out, border, i);
+	LUT = new Color[gradient_breaks];
+	for (int i = 0; i < gradient_breaks; i++)
+		LUT[i] = Lerp(border, out, i);
 }
 
 void Redraw()
 {
-	it = 1;
-	aa_complete = false;
-
-	for (int i = 0; i < canvas_size * supersampling; i++)
+	//if (THREADS_RDY)
 	{
-		for (int j = 0; j < canvas_size * supersampling; j++)
+		it = 1;
+		aa_complete = false;
+
+		for (int i = 0; i < threads; i++)
+			REDRAW_FLAG |= 1 << i;
+
+		/*for (int i = 0; i < canvas_size * supersampling; i++)
 		{
-			buffer[i][j] = -1;
-			a[i][j].im = a[i][j].real = 0;
-		}
+			for (int j = 0; j < canvas_size * supersampling; j++)
+			{
+				buffer[i][j] = -1;
+				a[i][j].im = a[i][j].real = 0;
+			}
+		}*/
+		std::system("cls");
+		std::cout << "\nREDRAW INITIATED\n\n"; 
+		begin = std::chrono::steady_clock::now();
 	}
 
-	std::system("cls");
-	std::cout << "\nREDRAW INITIATED\n\n"; 
-	begin = std::chrono::steady_clock::now();
 }
 
 double l_x, l_y;
-void mouse_button_callback(GLFWwindow * window, double xpos, double ypos)
+void mouse_move_callback(GLFWwindow * window, double xpos, double ypos)
 {
 	if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS)
 	{
@@ -330,13 +360,34 @@ void mouse_button_callback(GLFWwindow * window, double xpos, double ypos)
 	}
 }
 
+void mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
+{
+	if (button == GLFW_MOUSE_BUTTON_RIGHT && action == GLFW_PRESS)
+	{
+		double xpos, ypos;
+		glfwGetCursorPos(window, &xpos, &ypos);
+
+		double delta = 5 / (canvas_size * zoom * supersampling);
+
+		double d_x = (canvas_size/2) - xpos, d_y = (canvas_size / 2) - ypos;
+
+		pt_x -= d_x * delta;
+		pt_y -= d_y * delta;
+
+		Redraw();
+	}
+}
+
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 {
 	if (yoffset > 0)
+	{
 		zoom *= 1.2;
+	}
 	else if (yoffset < 0)
+	{
 		zoom /= 1.2;
-
+	}
 	Redraw();
 }
 
@@ -358,16 +409,21 @@ int main(void)
 
 	/* Make the window's context current */
 	glfwMakeContextCurrent(window);
-	glEnable(GL_BLEND);
+	/*glEnable(GL_BLEND);
 	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
 	glHint(GL_POINT_SMOOTH, GL_NICEST);
 	glHint(GL_LINE_SMOOTH, GL_NICEST);
 	glHint(GL_POLYGON_SMOOTH, GL_NICEST);
 
-	glEnable(GL_POINT_SMOOTH);
-	glfwSetCursorPosCallback(window, mouse_button_callback); 
-	glfwSetScrollCallback(window, scroll_callback);
+	glEnable(GL_POINT_SMOOTH);*/
+	glfwSetCursorPosCallback(window, mouse_move_callback); 
+	glfwSetScrollCallback(window, scroll_callback); 
+	glfwSetMouseButtonCallback(window, mouse_button_callback);
+
+	glMatrixMode(GL_PROJECTION);
+	glLoadIdentity();
+	glOrtho(0, canvas_size, canvas_size, 0, 0, 1);
 
 	InitLUT();
 
@@ -385,6 +441,7 @@ int main(void)
 		}
 	}
 
+	int downsample = 1;
 	/* Loop until the user closes the window */
 	while (!glfwWindowShouldClose(window))
 	{
@@ -396,16 +453,21 @@ int main(void)
 			if (it % 50 == 0)
 				std::cout << "\rIteration " << it;
 
-			if (it > 2 && ((it < 10 && it % 2 == 0) || (it < 50 && it % 20 == 0) || (it < 100 && it % 25 == 0) || (it > 100 && it % 100 == 0)))
-				renderloop(window, buffer, 1, true);
+			if (it == 30) renderloop(window, buffer, true, 5);
+			else if (it == 50) renderloop(window, buffer, true, 4);
+			else if (it == 100) renderloop(window, buffer, true, 3);
+			else if (it == 250) renderloop(window, buffer, true, 2);
+			else if (it == 500) renderloop(window, buffer, true, 1);
+			else if (it >= 1000 && it % 1000 == 0) renderloop(window, buffer, true, 1);
 			else
 				glfwPollEvents();
 		}
 		else                // Iterations done
 		{
 			if (!aa_complete)
-			{
+			{  
 				std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+				renderloop(window, buffer, true, 1);
 				std::cout << "\r" << iteration_limit << " iterations complete.\n";
 				std::cout << "Iteration time = " << (float)(std::chrono::duration_cast<std::chrono::microseconds>(end - begin).count())/1000000 << " sec." << std::endl;
 				std::cout << "\nAntialiasing started." << std::endl;
